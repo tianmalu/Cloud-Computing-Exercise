@@ -63,6 +63,20 @@
 {{ end }}
 
 
+{{ block "year-table" . }}
+<table>
+  <tr>
+    <th>Year</th>
+  </tr>
+  {{ range . }}
+  <tr>
+    <th> {{ . }} </th>
+  </tr>
+  {{ end }}
+</table>
+{{ end }}
+
+
 {{ block "book-table" . }}
 <table>
   <tr>
@@ -88,4 +102,18 @@
   <input type="text" required />
   <label>Search parameter</label>
 </div>
+{{ end }}
+
+
+{{ block "author-table" . }}
+<table>
+  <tr>
+    <th>Author Name</th>
+  </tr>
+  {{ range . }}
+  <tr>
+    <th> {{ . }} </th>
+  </tr>
+  {{ end }}
+</table>
 {{ end }}

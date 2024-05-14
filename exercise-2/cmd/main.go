@@ -174,6 +174,59 @@ func findAllBooks(coll *mongo.Collection) []map[string]interface{} {
 	return ret
 }
 
+func findAllAuthors(coll *mongo.Collection) []string {
+    cursor, err := coll.Find(context.TODO(), bson.D{{}})
+    var results []BookStore
+    if err = cursor.All(context.TODO(), &results); err != nil {
+        panic(err)
+    }
+
+    var authors []string
+    for _, res := range results {
+        authors = append(authors, res.BookAuthor)
+    }
+
+    return authors
+}
+
+func findAllYears(coll *mongo.Collection) []int {
+    cursor, err := coll.Find(context.TODO(), bson.D{{}})
+    var results []BookStore
+    if err = cursor.All(context.TODO(), &results); err != nil {
+        panic(err)
+    }
+
+    var years []int
+    for _, res := range results {
+        years = append(years, res.BookYear)
+    }
+
+    return years
+}
+
+func getAllBooks(coll *mongo.Collection) []map[string]interface{} {
+	cursor, err := coll.Find(context.TODO(), bson.D{{}})
+	var results []BookStore
+	if err = cursor.All(context.TODO(), &results); err != nil {
+		panic(err)
+	}
+
+	var ret []map[string]interface{}
+	for _, res := range results {
+		ret = append(ret, map[string]interface{}{
+			"id":     res.ID.Hex(),
+			"name":   res.BookName,
+			"author": res.BookAuthor,
+			
+			"pages":  res.BookPages,
+			"year":   res.BookYear,
+			"isbn":   res.BookISBN,
+		})
+	}
+
+	return ret
+}
+
 func main() {
 	// Connect to the database. Such defer keywords are used once the local
 	// context returns; for this case, the local context is the main function
@@ -241,11 +294,13 @@ func main() {
 	})
 
 	e.GET("/authors", func(c echo.Context) error {
-		return c.NoContent(http.StatusNoContent)
+		authors := findAllAuthors(coll)
+		return c.Render(200, "author-table", authors)
 	})
 
 	e.GET("/years", func(c echo.Context) error {
-		return c.NoContent(http.StatusNoContent)
+		years := findAllYears(coll)
+		return c.Render(200, "year-table", years)
 	})
 
 	e.GET("/search", func(c echo.Context) error {
@@ -257,9 +312,152 @@ func main() {
 	})
 
 	e.GET("/api/books", func(c echo.Context) error {
-		books := findAllBooks(coll)
+		books := getAllBooks(coll)
 		return c.JSON(http.StatusOK, books)
 	})
+
+	e.POST("/api/books", func(c echo.Context) error {
+		var temp struct {
+			Name    string `json:"name"`
+			Author  string `json:"author"`
+			ISBN    string `json:"isbn"`
+			Pages   int    `json:"pages"`
+			Year    int    `json:"year"`
+		}
+	
+		if err := c.Bind(&temp); err != nil {
+			return err
+		}
+
+		book := BookStore{
+			BookName:   temp.Name,
+			BookAuthor: temp.Author,
+			BookISBN:   temp.ISBN,
+			BookPages:  temp.Pages,
+			BookYear:   temp.Year,
+		}
+		log.Println("Searching for book:", book)
+
+		if book.BookName == "" || book.BookAuthor == "" || book.BookYear == 0 || book.BookPages == 0 {
+			return c.NoContent(http.StatusOK)
+		}
+		// Check for duplicates
+		count, err := coll.CountDocuments(c.Request().Context(), bson.M{
+			"bookname":   book.BookName,
+			"bookauthor": book.BookAuthor,
+			"bookyear":   book.BookYear,
+			"bookpages":  book.BookPages,
+		})
+		log.Println("Count:", count)
+		if err != nil {
+			log.Println(err)
+			return echo.NewHTTPError(http.StatusOK, err.Error())
+		}
+
+		if count > 0 {
+			// A matching document was found
+			return echo.NewHTTPError(http.StatusOK, "Book already exists.")
+		}
+	
+		// Insert the new book
+		_, err = coll.InsertOne(c.Request().Context(), book)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusOK, err.Error())
+		}
+	
+		return c.NoContent(http.StatusOK)
+	})
+
+	e.DELETE("/api/books/:id", func(c echo.Context) error {
+		id := c.Param("id")
+		objID, err := primitive.ObjectIDFromHex(id)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusOK, "Invalid ID")
+		}
+	
+		// Delete the book from the collection
+		res, err := coll.DeleteOne(c.Request().Context(), bson.M{"_id": objID})
+		if err != nil {
+			return echo.NewHTTPError(http.StatusOK, err.Error())
+		}
+	
+		// Check if a book was deleted
+		if res.DeletedCount == 0 {
+			return echo.NewHTTPError(http.StatusOK, "Book not found")
+		}
+	
+		return c.NoContent(http.StatusOK)
+	})
+
+	e.PUT("/api/books", func(c echo.Context) error {
+		var temp struct {
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			Author string `json:"author"`
+			ISBN   string `json:"isbn"`
+			Pages  int    `json:"pages"`
+			Year   int    `json:"year"`
+		}
+	
+		if err := c.Bind(&temp); err != nil {
+			return err
+		}
+	
+		if temp.ID == "" {
+			return echo.NewHTTPError(http.StatusOK, "Missing or invalid book ID")
+		}
+		objID, err := primitive.ObjectIDFromHex(temp.ID)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusOK, "Invalid book ID")
+		}
+		book := BookStore{
+			ID:         objID,
+			BookName:   temp.Name,
+			BookAuthor: temp.Author,
+			BookISBN:   temp.ISBN,
+			BookPages:  temp.Pages,
+			BookYear:   temp.Year,
+		}
+		// Get the existing book
+		var existingBook BookStore
+		err = coll.FindOne(c.Request().Context(), bson.M{"_id": book.ID}).Decode(&existingBook)
+		if err != nil {
+			log.Println(err)
+			return echo.NewHTTPError(http.StatusOK, err.Error())
+		}
+
+		// Check if any entry has changed
+		if existingBook.BookName == book.BookName && existingBook.BookAuthor == book.BookAuthor && existingBook.BookISBN == book.BookISBN && existingBook.BookPages == book.BookPages && existingBook.BookYear == book.BookYear {
+			// No entry has changed, do nothing
+			return c.NoContent(http.StatusOK)
+		}
+		// Check for duplicates
+		count, err := coll.CountDocuments(c.Request().Context(), bson.M{
+			"bookname":   book.BookName,
+			"bookauthor": book.BookAuthor,
+			"bookyear":   book.BookYear,
+			"bookpages":  book.BookPages,
+		})
+		log.Println("Count:", count)
+		if err != nil {
+			log.Println(err)
+			return echo.NewHTTPError(http.StatusOK, err.Error())
+		}
+
+		if count > 0 {
+			// A matching document was found
+			return echo.NewHTTPError(http.StatusOK, "Book already exists.")
+		}
+	
+		// update the book
+		_, err = coll.ReplaceOne(c.Request().Context(), bson.M{"_id": book.ID}, book)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusOK, err.Error())
+		}
+	
+		return c.NoContent(http.StatusOK)
+	})
+	
 
 	e.Logger.Fatal(e.Start(":3030"))
 }
